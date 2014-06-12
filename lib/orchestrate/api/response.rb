@@ -1,107 +1,111 @@
+require 'forwardable'
+require 'webrick'
+
 module Orchestrate::API
 
-  # Transforms the Net::HTTP response into a structure that provides ready
-  # access to relevant orchestrate.io response data.
-  #
+  # A generic response from the API.
   class Response
-    # Header
-    attr_reader :header
 
-    # ResponseBody
-    attr_reader :body
+    extend Forwardable
+    def_delegators :@response, :status, :body, :headers, :success?, :finished?, :on_complete
+    # @!attribute [r] status
+    #   @return [Integer] The HTTP Status code of the response.
+    # @!attribute [r] body
+    #   @return [Hash, String] The response body, de-serialized from JSON.
+    # @!attribute [r] headers
+    #   @return [Hash{String => String}] The response headers
+    # @!method success?()
+    #   @return [true, false] If the response is 1xx-3xx class response or a 4xx-5xx class response.
+    # @!method finished?()
+    #   @return [true, false] If the response is finished or not.
+    # @!method on_complete()
+    #   @yield [block] A block to be called when the response has completed.
 
-    def initialize(response)
-      @success = [200, 201, 204].include? response.code.to_i
-      @header  = Header.new(response.to_hash, response.code.to_i, response.message)
-      @body    = ResponseBody.new(response.body)
+    # @return [String] The Orchestrate API Request ID.  For use when troubleshooting.
+    attr_reader :request_id
+
+    # @return [Time] The time at which the response was made.
+    attr_reader :request_time
+
+    # @return [Orchestrate::Client] The client used to generate the response.
+    attr_reader :client
+
+    # Instantiate a new Respose
+    # @param faraday_response [Faraday::Response] The Faraday response object.
+    # @param client [Orchestrate::Client] The client used to generate the response.
+    def initialize(faraday_response, client)
+      @client = client
+      @response = faraday_response
+      @request_id = headers['X-Orchestrate-Req-Id']
+      @request_time = Time.parse(headers['Date'])
     end
 
-    # Returns boolean.
-    def success?
-      @success
-    end
+  end
 
-    # Provides methods for ready access to relevant information extracted
-    # from the Net::HTTP response headers.
-    #
-    class Header
+  # A generic response for a single entity (K/V, Ref, Event)
+  class ItemResponse < Response
 
-      # Original response headers from HTTParty.
-      attr_reader :content
+    # @return [String] The 'Location' of the item.
+    attr_reader :location
 
-      # HTTP response code.
-      attr_reader :code
+    # @return [String] The canonical 'ref' of the item.
+    attr_reader :ref
 
-      # HTTP response status.
-      attr_reader :status
-
-      attr_reader :timestamp
-
-      # ETag value, also known as the 'ref' value.
-      attr_reader :etag
-
-      # Link to the next url in a series of list requests.
-      attr_reader :link
-
-      def initialize(headers, code, msg)
-        @content = headers
-        @code, @status = code, msg
-        @timestamp = headers['date']
-        @etag = get_etag
-        @link = headers['link'] if headers['link']
-      end
-
-      private
-        def get_etag
-          if @code == 200 && @content['etag']
-            @content['etag'].first.sub(/\-gzip/, '')
-          elsif @code == 201 && @content['location'].present?
-            "\"#{@content['location'].first.split('/').last}\""
-          end
-        end
+    # (see Orchestrate::API::Response#initialize)
+    def initialize(faraday_response, client)
+      super(faraday_response, client)
+      @location = headers['Content-Location'] || headers['Location']
+      @ref = headers.fetch('Etag','').gsub('"','')
     end
   end
 
+  # A generic response for a collection of entities (K/V, Refs, Events, Search)
+  class CollectionResponse < Response
 
-  # Decodes body from json into a hash; provides the original body content
-  # via the 'content' method.
-  #
-  class ResponseBody
-
-    # Original response body from Net::HTTP.
-    attr_reader :content
-
-    # The json response body converted to a hash.
-    attr_reader :to_hash
-
-    # Set for all results.
-    attr_reader :results
-
-    # Set for list, search, get_events, and get_graph results.
+    # @return [Integer] The number of items in this response
     attr_reader :count
 
-    # Set for search results.
+    # @return [Integer, nil] If provided, the number of total items for this collection
     attr_reader :total_count
 
-    # Set for list results.
-    attr_reader :next
+    # @return [Array] The items in the response.
+    attr_reader :results
 
-    # Error message from the orchestrate.io api.
-    attr_reader :message
+    # @return [String] The location for the next page of results
+    attr_reader :next_link
 
-    # Error code from the orchestrate.io api.
-    attr_reader :code
+    # @return [String] The location for the previous page of results
+    attr_reader :prev_link
 
-    # Initialize instance variables, based on response body contents.
-    def initialize(body)
-      @content = body
-      @to_hash = (body.nil? || body == '' || body == {}) ? {} : JSON.parse(body)
-      to_hash.each { |k,v| instance_variable_set "@#{k}", v }
+    # (see Orchestrate::API::Response#initialize)
+    def initialize(faraday_response, client)
+      super(faraday_response, client)
+      @count = body['count']
+      @total_count = body['total_count']
+      @results = body['results']
+      @next_link = body['next']
+      @prev_link = body['prev']
     end
 
-    def result_keys
-      results.map { |result| result['path']['key'] } if results
+    # Retrieves the next page of results, if available
+    # @return [nil, Orchestrate::API::CollectionResponse]
+    def next_results
+      fire_request(next_link)
+    end
+
+    # Retrieves the previous page of results, if available
+    # @return [nil, Orchestrate::API::CollectionResponse]
+    def previous_results
+      fire_request(prev_link)
+    end
+
+    private
+    def fire_request(link)
+      return nil unless link
+      uri = URI(link)
+      params = WEBrick::HTTPUtils.parse_query(uri.query)
+      path = uri.path.split("/")[2..-1]
+      @client.send_request(:get, path, { query: params, response: self.class })
     end
   end
-
 end
