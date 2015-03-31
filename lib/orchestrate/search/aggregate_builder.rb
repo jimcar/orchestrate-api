@@ -2,7 +2,7 @@ module Orchestrate::Search
   # Aggregate Builder object for constructing aggregate params included in a search
   class AggregateBuilder
 
-    # @return [QueryBuilder] 
+    # @return [QueryBuilder]
     attr_reader :builder
 
     # @return [Array] Aggregate param arguments
@@ -39,6 +39,16 @@ module Orchestrate::Search
     # @!group Aggregate Functions
 
     # @param field_name [#to_s]
+    # @param offset [Integer, nil]
+    # @param limit [Integer, nil]
+    # @return [AggregateBuilder]
+    def top_values(field_name, offset = nil, limit = nil)
+      topValues = TopValuesBuilder.new(self, "#{field_name}", offset, limit)
+      aggregates << topValues
+      topValues
+    end
+
+    # @param field_name [#to_s]
     # @return [AggregateBuilder]
     def stats(field_name)
       stat = StatsBuilder.new(self, "#{field_name}")
@@ -72,9 +82,72 @@ module Orchestrate::Search
     # @!endgroup
   end
 
+  # Stats Builder object for constructing top-values functions to be included in the aggregate param
+  class TopValuesBuilder
+
+    # @return [AggregateBuilder]
+    attr_reader :builder
+
+    # @return [#to_s] The field to operate over
+    attr_reader :field_name
+
+    # @return [Integer,nil] The zero-based index of the first paged value to retrieve in this aggregation.
+    # If omitted, uses the server default value of zero.
+    attr_reader :offset
+
+    # @return [Integer,nil] The maximum number of values to retrieve per page of results for this aggregation.
+    # If omitted, uses the server default value of ten.
+    attr_reader :limit
+
+    extend Forwardable
+
+    # Initialize a new TopValuesBuilder object
+    # @param builder [AggregateBuilder] The Aggregate Builder object
+    # @param field_name [#to_s]
+    # @param offset
+    # @param limit
+    def initialize(builder, field_name, offset, limit)
+      @builder = builder
+      @field_name = field_name
+      if offset.nil? ^ limit.nil?
+        raise "offset and limit arguments can only be supplied together, or not at all"
+      end
+      @offset = offset
+      @limit = limit
+    end
+
+    def_delegator :@builder, :options
+    def_delegator :@builder, :order
+    def_delegator :@builder, :limit
+    def_delegator :@builder, :offset
+    def_delegator :@builder, :aggregate
+    def_delegator :@builder, :find
+    def_delegator :@builder, :top_values
+    def_delegator :@builder, :stats
+    def_delegator :@builder, :range
+    def_delegator :@builder, :distance
+    def_delegator :@builder, :time_series
+    def_delegator :@builder, :collection
+
+    # @return [#to_s] Pretty-Printed string representation of the TopValuesBuilder object
+    def to_s
+      "#<Orchestrate::Search::TopValuesBuilder collection=#{collection.name} field_name=#{field_name} offset=#{offset} limit=#{limit}>"
+    end
+    alias :inspect :to_s
+
+    # @return [#to_s] constructed aggregate string clause
+    def to_param
+      if offset.nil? && limit.nil?
+        "#{field_name}:top_values"
+      else
+        "#{field_name}:top_values:offset:#{offset}:limit:#{limit}"
+      end
+    end
+  end
+
   # Stats Builder object for constructing stats functions to be included in the aggregate param
   class StatsBuilder
-    
+
     # @return [AggregateBuilder]
     attr_reader :builder
 
@@ -97,6 +170,7 @@ module Orchestrate::Search
     def_delegator :@builder, :offset
     def_delegator :@builder, :aggregate
     def_delegator :@builder, :find
+    def_delegator :@builder, :top_values
     def_delegator :@builder, :stats
     def_delegator :@builder, :range
     def_delegator :@builder, :distance
@@ -125,7 +199,7 @@ module Orchestrate::Search
     attr_reader :field_name
 
     # @return [#to_s] The range sets
-    attr_reader :ranges 
+    attr_reader :ranges
 
     extend Forwardable
 
@@ -144,6 +218,7 @@ module Orchestrate::Search
     def_delegator :@builder, :offset
     def_delegator :@builder, :aggregate
     def_delegator :@builder, :find
+    def_delegator :@builder, :top_values
     def_delegator :@builder, :stats
     def_delegator :@builder, :range
     def_delegator :@builder, :distance
@@ -229,6 +304,7 @@ module Orchestrate::Search
     def_delegator :@builder, :offset
     def_delegator :@builder, :aggregate
     def_delegator :@builder, :find
+    def_delegator :@builder, :top_values
     def_delegator :@builder, :stats
     def_delegator :@builder, :range
     def_delegator :@builder, :distance
