@@ -1,107 +1,155 @@
+require 'forwardable'
+require 'webrick'
+require 'json' unless defined?(::JSON)
+
 module Orchestrate::API
 
-  # Transforms the Net::HTTP response into a structure that provides ready
-  # access to relevant orchestrate.io response data.
-  #
+  # A generic response from the API.
   class Response
-    # Header
-    attr_reader :header
 
-    # ResponseBody
+    extend Forwardable
+    def_delegators :@response, :status, :headers, :success?, :finished?, :on_complete
+    # @!attribute [r] status
+    #   @return [Integer] The HTTP Status code of the response.
+    # @!attribute [r] body
+    #   @return [Hash, String] The response body, de-serialized from JSON.
+    # @!attribute [r] headers
+    #   @return [Hash{String => String}] The response headers
+    # @!method success?()
+    #   @return [true, false] If the response is 1xx-3xx class response or a 4xx-5xx class response.
+    # @!method finished?()
+    #   @return [true, false] If the response is finished or not.
+    # @!method on_complete()
+    #   @yield [block] A block to be called when the response has completed.
+
+    # @return [String] The Orchestrate API Request ID.  For use when troubleshooting.
+    attr_reader :request_id
+
+    # @return [Time] The time at which the response was made.
+    attr_reader :request_time
+
+    # @return [Orchestrate::Client] The client used to generate the response.
+    attr_reader :client
+
+    # @return [String, Hash] The response body from Orchestrate
     attr_reader :body
 
-    def initialize(response)
-      @success = [200, 201, 204].include? response.code.to_i
-      @header  = Header.new(response.to_hash, response.code.to_i, response.message)
-      @body    = ResponseBody.new(response.body)
-    end
-
-    # Returns boolean.
-    def success?
-      @success
-    end
-
-    # Provides methods for ready access to relevant information extracted
-    # from the Net::HTTP response headers.
-    #
-    class Header
-
-      # Original response headers from HTTParty.
-      attr_reader :content
-
-      # HTTP response code.
-      attr_reader :code
-
-      # HTTP response status.
-      attr_reader :status
-
-      attr_reader :timestamp
-
-      # ETag value, also known as the 'ref' value.
-      attr_reader :etag
-
-      # Link to the next url in a series of list requests.
-      attr_reader :link
-
-      def initialize(headers, code, msg)
-        @content = headers
-        @code, @status = code, msg
-        @timestamp = headers['date']
-        @etag = get_etag
-        @link = headers['link'] if headers['link']
-      end
-
-      private
-        def get_etag
-          if @code == 200 && @content['etag']
-            @content['etag'].first.sub(/\-gzip/, '')
-          elsif @code == 201 && @content['location'].present?
-            "\"#{@content['location'].first.split('/').last}\""
-          end
+    # Instantiate a new Respose
+    # @param faraday_response [Faraday::Response] The Faraday response object.
+    # @param client [Orchestrate::Client] The client used to generate the response.
+    def initialize(faraday_response, client)
+      @client = client
+      @response = faraday_response
+      @response.on_complete do
+        @request_id = headers['X-Orchestrate-Req-Id'] if headers['X-Orchestrate-Req-Id']
+        @request_time = Time.parse(headers['Date']) if headers['Date']
+        if headers['Content-Type'] =~ /json/ && !@response.body.strip.empty?
+          @body = JSON.parse(@response.body)
+        else
+          @body = @response.body
         end
+        handle_error_response unless success?
+      end
     end
+
+    # @!visibility private
+    def to_s
+      "#<#{self.class.name} status=#{status} request_id=#{request_id}>"
+    end
+    alias :inspect :to_s
+
+    private
+    def handle_error_response
+      err_type = if body && body['code']
+        ERRORS.find {|err| err.status == status && err.code == body['code'] }
+      else
+        errors = ERRORS.select {|err| err.status == status}
+        errors.length == 1 ? errors.first : nil
+      end
+      if err_type
+        raise err_type.new(self)
+      elsif status < 500
+        raise RequestError.new(self)
+      else
+        raise ServiceError.new(self)
+      end
+    end
+
   end
 
+  # A generic response for a single entity (K/V, Ref, Event)
+  class ItemResponse < Response
 
-  # Decodes body from json into a hash; provides the original body content
-  # via the 'content' method.
-  #
-  class ResponseBody
+    # @return [String] The 'Location' of the item.
+    attr_reader :location
 
-    # Original response body from Net::HTTP.
-    attr_reader :content
+    # @return [String] The canonical 'ref' of the item.
+    attr_reader :ref
 
-    # The json response body converted to a hash.
-    attr_reader :to_hash
+    # (see Orchestrate::API::Response#initialize)
+    def initialize(faraday_response, client)
+      super(faraday_response, client)
+      @response.on_complete do
+        @location = headers['Content-Location'] || headers['Location']
+        @ref = headers.fetch('Etag','').gsub('"','').sub(/-gzip$/,'')
+      end
+    end
 
-    # Set for all results.
-    attr_reader :results
+  end
 
-    # Set for list, search, get_events, and get_graph results.
+  # A generic response for a collection of entities (K/V, Refs, Events, Search)
+  class CollectionResponse < Response
+
+    # @return [Integer] The number of items in this response
     attr_reader :count
 
-    # Set for search results.
+    # @return [Integer, nil] If provided, the number of total items for this collection
     attr_reader :total_count
 
-    # Set for list results.
-    attr_reader :next
+    # @return [Array] The items in the response.
+    attr_reader :results
 
-    # Error message from the orchestrate.io api.
-    attr_reader :message
+    # @return [Array] The aggregate items in the response.
+    attr_reader :aggregates
 
-    # Error code from the orchestrate.io api.
-    attr_reader :code
+    # @return [String] The location for the next page of results
+    attr_reader :next_link
 
-    # Initialize instance variables, based on response body contents.
-    def initialize(body)
-      @content = body
-      @to_hash = (body.nil? || body == '' || body == {}) ? {} : JSON.parse(body)
-      to_hash.each { |k,v| instance_variable_set "@#{k}", v }
+    # @return [String] The location for the previous page of results
+    attr_reader :prev_link
+
+    # (see Orchestrate::API::Response#initialize)
+    def initialize(faraday_response, client)
+      super(faraday_response, client)
+      @response.on_complete do
+        @count = body['count']
+        @total_count = body['total_count']
+        @results = body['results']
+        @aggregates = body['aggregates']
+        @next_link = body['next']
+        @prev_link = body['prev']
+      end
     end
 
-    def result_keys
-      results.map { |result| result['path']['key'] } if results
+    # Retrieves the next page of results, if available
+    # @return [nil, Orchestrate::API::CollectionResponse]
+    def next_results
+      fire_request(next_link)
+    end
+
+    # Retrieves the previous page of results, if available
+    # @return [nil, Orchestrate::API::CollectionResponse]
+    def previous_results
+      fire_request(prev_link)
+    end
+
+    private
+    def fire_request(link)
+      return nil unless link
+      uri = URI(link)
+      params = WEBrick::HTTPUtils.parse_query(uri.query)
+      path = uri.path.split("/")[2..-1]
+      @client.send_request(:get, path, { query: params, response: self.class })
     end
   end
-
 end

@@ -1,45 +1,19 @@
 require "orchestrate/api"
 require "orchestrate/client"
-require "orchestrate/configuration"
+require "orchestrate/application"
+require "orchestrate/collection"
+require "orchestrate/search"
+require "orchestrate/key_value"
+require "orchestrate/refs"
+require "orchestrate/event"
+require "orchestrate/event_source"
+require "orchestrate/graph"
 require "orchestrate/version"
-
 #
 # A library for supporting connections to the \Orchestrate API.
 #
 module Orchestrate
 
-  # Configuration ------------------------------------------------------------
-
-  class << self
-
-    #
-    # An instance of Configuration containing the current library
-    # configuration options.
-    #
-    attr_accessor :config
-
-    #
-    # Lazily initialize and return the Configuration instance.
-    #
-    def config # :nodoc:
-      @config ||= Configuration.new
-    end
-
-    #
-    # Configure the Orchestrate library. This method should be called during
-    # application or script initialization. At a bare minimum, the Orchestrate
-    # library will require that an API key is provided.
-    #
-    # ==== Example
-    #
-    #   Orchestrate.configure do |config|
-    #     config.api_key = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-    #   end
-    #
-    def configure
-      yield config
-    end
-
-  end
-
+  # If you attempt to enumerate over results in an in_parallel block
+  class ResultsNotReady < StandardError; end
 end

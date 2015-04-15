@@ -1,19 +1,13 @@
 require "orchestrate"
-require "orchestrate/api/procedural"
-require "orchestrate/api/request"
-require "orchestrate/api/response"
-require "orchestrate/api/url"
-require "orchestrate/api/extensions"
 
 module Orchestrate
 
-  #
-  # Ruby gem +orchestrate-api+ provides an interface to the
-  # [Orchestrate](http://orchestrate.io) API.
-  #
-  # The Client class is used to setup the client and make HTTP requests.
-  #
+  # Namespace for concerns related to the Orchestrate API
   module API
   end
 
 end
+
+require_relative 'api/response'
+require_relative 'api/errors'
+require_relative 'api/helpers'
